@@ -51,11 +51,14 @@ runs:
           # reliably carry tags, and a missed tag silently restarts numbering
           # at v0.0.1 and then fails on push. `sort -V` also survives gaps
           # (v0.0.4 with no v0.0.3).
+          # `|| true` rescues the no-tags case: grep matching nothing exits 1,
+          # which under the runner's `bash -e -o pipefail` would kill the step
+          # before the v0.0.0 fallback below.
           latest=$(git ls-remote --tags --refs origin 'v*' \
             | awk '{print $2}' \
             | sed 's#refs/tags/##' \
             | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sort -V | tail -1)
+            | sort -V | tail -1 || true)
           latest="${latest:-v0.0.0}"
           IFS=. read -r maj min pat <<< "${latest#v}"
           case "$bump" in
