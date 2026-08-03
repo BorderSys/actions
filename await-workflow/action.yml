@@ -1,0 +1,54 @@
+name: Await workflow
+description: Wait for the latest run of a workflow on a branch or tag to complete successfully.
+
+# For cross-workflow ordering: releasing something that consumes another
+# workflow's output means waiting for that output to actually land — e.g. a
+# spec publish before building the client that bakes it in.
+
+inputs:
+  token:
+    description: GitHub token for gh run list
+    required: true
+  workflow:
+    description: Workflow file to wait for
+    required: true
+  ref:
+    description: Branch or tag whose latest run to watch
+    required: true
+  timeout-minutes:
+    description: How long to wait for the run to finish
+    required: false
+    default: "20"
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        polls=$(( ${{ inputs.timeout-minutes }} * 3 ))
+        for i in $(seq 1 "$polls"); do
+          read -r status conclusion < <(gh run list \
+            --workflow "${{ inputs.workflow }}" --branch "${{ inputs.ref }}" --limit 1 \
+            --json status,conclusion \
+            --jq 'if length == 0 then "none none" else .[0].status + " " + (.[0].conclusion // "none") end' \
+            || echo "none none")
+          echo "${{ inputs.workflow }} on ${{ inputs.ref }}: status=$status conclusion=$conclusion (poll $i)"
+          case "$status" in
+            completed)
+              [ "$conclusion" = "success" ] && exit 0
+              echo "${{ inputs.workflow }} failed on ${{ inputs.ref }}" >&2
+              exit 1
+              ;;
+            none)
+              if [ "$i" -ge 6 ]; then
+                echo "no ${{ inputs.workflow }} run found for ${{ inputs.ref }}" >&2
+                exit 1
+              fi
+              ;;
+          esac
+          sleep 20
+        done
+        echo "timed out waiting for ${{ inputs.workflow }} (${{ inputs.timeout-minutes }}m)" >&2
+        exit 1

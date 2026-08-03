@@ -1,0 +1,56 @@
+name: Require green CI
+description: Find the CI run for a commit and fail unless it finished green.
+
+inputs:
+  token:
+    description: GitHub token for gh run list
+    required: true
+  workflow:
+    description: Workflow file whose run gates the release
+    required: false
+    default: ci.yml
+  commit:
+    description: Commit to check (defaults to the current SHA)
+    required: false
+    default: ""
+  timeout-minutes:
+    description: How long to wait for the run to finish
+    required: false
+    default: "30"
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        commit="${{ inputs.commit }}"
+        commit="${commit:-$GITHUB_SHA}"
+        polls=$(( ${{ inputs.timeout-minutes }} * 2 ))
+        for i in $(seq 1 "$polls"); do
+          read -r status conclusion < <(gh run list \
+            --workflow "${{ inputs.workflow }}" --commit "$commit" --limit 1 \
+            --json status,conclusion \
+            --jq 'if length == 0 then "none none" else .[0].status + " " + (.[0].conclusion // "none") end' \
+            || echo "none none")
+          echo "CI on $commit: status=$status conclusion=$conclusion (poll $i)"
+          case "$status" in
+            completed)
+              [ "$conclusion" = "success" ] && exit 0
+              echo "CI did not pass on $commit" >&2
+              exit 1
+              ;;
+            none)
+              # A run should appear within a couple of minutes of the push;
+              # no run at all is its own failure, not something to wait out.
+              if [ "$i" -ge 4 ]; then
+                echo "no ${{ inputs.workflow }} run found for $commit" >&2
+                exit 1
+              fi
+              ;;
+          esac
+          sleep 30
+        done
+        echo "timed out waiting for CI (${{ inputs.timeout-minutes }}m)" >&2
+        exit 1

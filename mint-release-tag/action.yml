@@ -1,0 +1,65 @@
+name: Mint release tag
+description: Tag the current commit with a v* version, auto-bumped from the latest tag unless one is given.
+
+# Needs a checkout with fetch-tags true (for the auto-bump to see prior
+# tags) and a workflow with contents write (the tag push reuses the
+# credentials actions/checkout leaves behind). Workflow-token pushes never
+# re-trigger workflows, so the minting run carries on.
+
+inputs:
+  bump:
+    description: Bump size when no explicit version is given, patch, minor, or major
+    required: false
+    default: patch
+  version:
+    description: Explicit version, e.g. 0.3.0 (overrides bump)
+    required: false
+    default: ""
+  ref:
+    description: Commit to tag (defaults to the current SHA; pass a bump commit's SHA when releasing one)
+    required: false
+    default: ""
+
+outputs:
+  tag:
+    description: The tag that was created
+    value: ${{ steps.mint.outputs.tag }}
+
+runs:
+  using: composite
+  steps:
+    - id: mint
+      shell: bash
+      run: |
+        version="${{ inputs.version }}"
+        if [ -z "$version" ]; then
+          # Ask the remote rather than the checkout: a shallow clone does not
+          # reliably carry tags, and a missed tag silently restarts numbering
+          # at v0.0.1 and then fails on push. `sort -V` also survives gaps
+          # (v0.0.4 with no v0.0.3).
+          latest=$(git ls-remote --tags --refs origin 'v*' \
+            | awk '{print $2}' \
+            | sed 's#refs/tags/##' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -1)
+          latest="${latest:-v0.0.0}"
+          IFS=. read -r maj min pat <<< "${latest#v}"
+          case "${{ inputs.bump }}" in
+            major) maj=$((maj + 1)); min=0; pat=0 ;;
+            minor) min=$((min + 1)); pat=0 ;;
+            *)     pat=$((pat + 1)) ;;
+          esac
+          version="$maj.$min.$pat"
+          echo "auto-bumped ${{ inputs.bump }} from $latest"
+        fi
+        tag="v${version#v}"
+        ref="${{ inputs.ref }}"
+        ref="${ref:-$GITHUB_SHA}"
+        git tag "$tag" "$ref"
+        git push origin "refs/tags/$tag" || {
+          echo "tag $tag already exists; pick a new version" >&2
+          exit 1
+        }
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+        echo "released $tag at $ref"
+        echo "### Released \`$tag\` at \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
