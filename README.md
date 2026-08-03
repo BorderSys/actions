@@ -13,7 +13,10 @@ conductor's `dokploy-deploy`).
 ## mint-release-tag
 
 Tag the current commit with a `v*` version, auto-bumped (patch/minor/major)
-from the latest remote tag unless an explicit version is given. Needs a
+from the latest remote tag unless an explicit version is given. `bump: auto`
+infers the size from the head commit instead: conventional-commit breaking
+markers (`feat!:`, `fix(scope)!:`, `BREAKING CHANGE:`) mint a minor — the
+breaking lane on 0.x — and anything else a patch. Needs a
 checkout with `fetch-tags: true` and a workflow with `contents: write`.
 Pushes made with the workflow token never re-trigger workflows, so the run
 that mints carries on — the conductor release pattern.

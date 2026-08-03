@@ -8,7 +8,10 @@ description: Tag the current commit with a v* version, auto-bumped from the late
 
 inputs:
   bump:
-    description: Bump size when no explicit version is given, patch, minor, or major
+    description: >-
+      Bump size when no explicit version is given: patch, minor, major, or
+      auto (infer from the head commit — conventional-commit breaking markers
+      mint a minor, anything else a patch)
     required: false
     default: patch
   version:
@@ -32,6 +35,17 @@ runs:
       shell: bash
       run: |
         version="${{ inputs.version }}"
+        bump="${{ inputs.bump }}"
+        if [ "$bump" = "auto" ]; then
+          # Breaking commits mint a minor — the breaking lane while on 0.x,
+          # where caret ranges never float across minors. Revisit at 1.0.
+          if git log -1 --format=%B | grep -qE '^[a-z]+(\(.+\))?!:|BREAKING CHANGE:'; then
+            bump=minor
+          else
+            bump=patch
+          fi
+          echo "auto bump resolved to $bump from the head commit"
+        fi
         if [ -z "$version" ]; then
           # Ask the remote rather than the checkout: a shallow clone does not
           # reliably carry tags, and a missed tag silently restarts numbering
@@ -44,13 +58,13 @@ runs:
             | sort -V | tail -1)
           latest="${latest:-v0.0.0}"
           IFS=. read -r maj min pat <<< "${latest#v}"
-          case "${{ inputs.bump }}" in
+          case "$bump" in
             major) maj=$((maj + 1)); min=0; pat=0 ;;
             minor) min=$((min + 1)); pat=0 ;;
             *)     pat=$((pat + 1)) ;;
           esac
           version="$maj.$min.$pat"
-          echo "auto-bumped ${{ inputs.bump }} from $latest"
+          echo "auto-bumped $bump from $latest"
         fi
         tag="v${version#v}"
         ref="${{ inputs.ref }}"
