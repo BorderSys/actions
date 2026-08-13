@@ -1,13 +1,14 @@
 # bordersys/actions
 
 Composite actions shared across our repos — only the generic ones any repo
-can use. App-specific actions stay with their apps (diorama's `sim`/`finish`,
-conductor's `dokploy-deploy`).
+can use. App-specific actions stay with their apps (such as diorama's
+`sim`/`finish`).
 
 ```yaml
 - uses: bordersys/actions/mint-release-tag@main
 - uses: bordersys/actions/require-green-ci@main
 - uses: bordersys/actions/await-workflow@main
+- uses: bordersys/actions/dokploy-deploy@main
 ```
 
 ## mint-release-tag
@@ -34,6 +35,15 @@ Wait for the latest run of some workflow on a branch or tag to complete
 successfully — for cross-workflow ordering, like waiting for a spec publish
 before building the thing that consumes it. Inputs: `workflow` and `ref`
 (required), `token` (required), `timeout-minutes` (default 20).
+
+## dokploy-deploy
+
+Trigger a Dokploy Compose deployment and wait for the deployment record to
+finish. It tracks the newly created deployment rather than trusting the
+possibly stale stack-wide Compose status, with a compatibility fallback when
+the deployments endpoint is unavailable. Inputs: `name`, `dokploy-url`,
+`api-key`, and `compose-id` (required); `timeout-minutes` (default 30) and
+`poll-seconds` (default 5).
 
 ## Private-repo note
 

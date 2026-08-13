@@ -1,0 +1,106 @@
+name: Dokploy deploy
+description: Trigger a Dokploy compose deploy and wait until its build lands.
+
+inputs:
+  name:
+    description: Label used in logs, e.g. conductor or bff
+    required: true
+  dokploy-url:
+    description: Dokploy base URL, no trailing slash
+    required: true
+  api-key:
+    description: Dokploy API key
+    required: true
+  compose-id:
+    description: Id of the compose service to deploy
+    required: true
+  timeout-minutes:
+    description: How long to wait for the build before failing
+    required: false
+    default: "30"
+  poll-seconds:
+    description: Seconds between status polls
+    required: false
+    default: "5"
+
+runs:
+  using: composite
+  steps:
+    # composeStatus is stack-wide and can be stale from a previous deploy,
+    # so the wait tracks the deployment record our trigger creates instead.
+    # Snapshot the newest deployment id first; anything different later is
+    # ours. Falls back to composeStatus when the deployments endpoint is
+    # not routed (e.g. a Traefik path allowlist).
+    - name: Snapshot deployments
+      id: snapshot
+      shell: bash
+      run: |
+        resp=$(curl -sS -m 10 \
+          -H "x-api-key: ${{ inputs.api-key }}" \
+          "${{ inputs.dokploy-url }}/api/deployment.allByCompose?composeId=${{ inputs.compose-id }}" \
+          || true)
+        if echo "$resp" | jq -e 'type == "array"' > /dev/null 2>&1; then
+          echo "tracking=deployment" >> "$GITHUB_OUTPUT"
+          echo "baseline=$(echo "$resp" | jq -r '.[0].deploymentId // ""')" >> "$GITHUB_OUTPUT"
+          echo "tracking the deployment record"
+        else
+          echo "tracking=compose" >> "$GITHUB_OUTPUT"
+          echo "baseline=" >> "$GITHUB_OUTPUT"
+          echo "deployments endpoint unavailable; falling back to composeStatus"
+        fi
+
+    - name: Trigger deploy
+      shell: bash
+      run: |
+        curl --fail-with-body -sS -X POST \
+          -H "x-api-key: ${{ inputs.api-key }}" \
+          -H "Content-Type: application/json" \
+          -d '{"composeId": "${{ inputs.compose-id }}"}' \
+          "${{ inputs.dokploy-url }}/api/compose.deploy"
+
+    - name: Wait for build
+      shell: bash
+      run: |
+        interval="${{ inputs.poll-seconds }}"
+        polls=$(( ${{ inputs.timeout-minutes }} * 60 / interval ))
+        api="${{ inputs.dokploy-url }}/api"
+
+        if [ "${{ steps.snapshot.outputs.tracking }}" = "deployment" ]; then
+          baseline="${{ steps.snapshot.outputs.baseline }}"
+          for i in $(seq 1 "$polls"); do
+            row=$(curl -sS -m 10 \
+              -H "x-api-key: ${{ inputs.api-key }}" \
+              "$api/deployment.allByCompose?composeId=${{ inputs.compose-id }}" \
+              | jq -r '.[0] | "\(.deploymentId // "") \(.status // "")"' 2>/dev/null || echo " ")
+            dep_id="${row%% *}"
+            status="${row#* }"
+            if [ -n "$dep_id" ] && [ "$dep_id" != "$baseline" ]; then
+              echo "${{ inputs.name }} deployment $dep_id: ${status:-unknown} (poll $i/$polls)"
+              case "$status" in
+                done)  exit 0 ;;
+                error) echo "${{ inputs.name }} build failed on Dokploy" >&2; exit 1 ;;
+              esac
+            else
+              echo "${{ inputs.name }}: waiting for the queued deployment to start (poll $i/$polls)"
+            fi
+            sleep "$interval"
+          done
+        else
+          # Legacy composeStatus polling; can misread a stale done/error if
+          # the queue is slow, hence the deployment tracking above.
+          sleep 15
+          for i in $(seq 1 "$polls"); do
+            status=$(curl -sS \
+              -H "x-api-key: ${{ inputs.api-key }}" \
+              "$api/compose.one?composeId=${{ inputs.compose-id }}" \
+              | jq -r '.composeStatus // empty')
+            echo "${{ inputs.name }} composeStatus: ${status:-unknown} (poll $i/$polls)"
+            case "$status" in
+              done)  exit 0 ;;
+              error) echo "${{ inputs.name }} build failed on Dokploy" >&2; exit 1 ;;
+            esac
+            sleep "$interval"
+          done
+        fi
+        echo "timed out waiting for the ${{ inputs.name }} build (${{ inputs.timeout-minutes }}m)" >&2
+        exit 1
